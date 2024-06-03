@@ -6,6 +6,7 @@ use clap::Parser;
 use color_eyre::eyre::bail;
 use dye::{Color, DyeCalcMode};
 use itertools::Itertools;
+use prettytable::{row, Table};
 use serde::Deserialize;
 
 #[derive(Debug, Parser)]
@@ -17,6 +18,10 @@ pub struct Args {
     /// Use the total item counts instead of missing, for example to have a global view even when halfway built already
     #[arg(long)]
     pub use_total: bool,
+
+    /// List items in the file
+    #[arg(long)]
+    pub list: bool,
 
     /// Compute dye quantities for dyeable blocks
     #[arg(long, value_enum)]
@@ -31,7 +36,7 @@ struct RawMaterial {
     missing: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Item {
     item: String,
     color: Option<Color>,
@@ -54,8 +59,8 @@ impl Item {
 impl Display for Item {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.color {
-            Some(color) => write!(f, "{} {} {}", self.count, color, self.item),
-            None => write!(f, "{} {}", self.count, self.item),
+            Some(c) => write!(f, "{} {}", c, self.item),
+            None => write!(f, "{}", self.item),
         }
     }
 }
@@ -89,17 +94,17 @@ fn main() -> color_eyre::eyre::Result<()> {
         items
     };
 
-    for item in &items {
-        println!("{}", item);
+    if args.list {
+        print_table(
+            ("Item", "Quantity"),
+            items.iter().map(|i| (i, i.count)).collect(),
+        );
     }
 
     if let Some(dye_calc) = args.dye_calc {
         let colors = dye::compute_colors(&items);
 
-        println!("\nColors:");
-        for (color, count) in sort_map(&colors) {
-            println!("{}: {}", color, count);
-        }
+        print_table(("Color", "Count"), sort_map(&colors));
 
         if matches!(
             dye_calc,
@@ -107,10 +112,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         ) {
             let dyes = dye::compute_dye_ingredients(colors, dye_calc);
 
-            println!("\nDyes ({:?}):", dye_calc);
-            for (color, count) in sort_map(&dyes) {
-                println!("{}: {}", color, count);
-            }
+            print_table(("Dye", "Quantity"), sort_map(&dyes));
         }
     }
 
@@ -119,4 +121,15 @@ fn main() -> color_eyre::eyre::Result<()> {
 
 fn sort_map<K, V: Ord>(map: &HashMap<K, V>) -> Vec<(&K, &V)> {
     map.iter().sorted_by_key(|(_, v)| *v).rev().collect()
+}
+
+fn print_table<K: Display, V: Display>(header: (&str, &str), map: Vec<(K, V)>) {
+    let mut table = Table::new();
+    table.add_row(row![header.0, header.1]);
+
+    for (key, value) in map {
+        table.add_row(row![key, value]);
+    }
+
+    table.printstd();
 }
