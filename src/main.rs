@@ -1,29 +1,66 @@
-use std::{collections::HashMap, path::PathBuf};
+mod dye;
+
+use std::{collections::HashMap, fmt::Display, path::PathBuf};
 
 use clap::Parser;
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::bail;
+use dye::{Color, DyeCalcMode};
+use itertools::Itertools;
 use serde::Deserialize;
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
-struct Args {
+pub struct Args {
     /// The CSV file to be read and analyzed
-    file: PathBuf,
+    pub file: PathBuf,
 
     /// Use the total item counts instead of missing, for example to have a global view even when halfway built already
     #[arg(long)]
-    use_total: bool,
+    pub use_total: bool,
+
+    /// Compute dye quantities for dyeable blocks
+    #[arg(long, value_enum)]
+    pub dye_calc: Option<DyeCalcMode>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct MaterialLine {
+struct RawMaterial {
     item: String,
     total: u32,
     missing: u32,
 }
 
-fn main() -> Result<()> {
+#[derive(Debug)]
+struct Item {
+    item: String,
+    color: Option<Color>,
+    count: u32,
+}
+
+impl Item {
+    fn from_raw(raw: RawMaterial, use_total: bool) -> Self {
+        let (color, item) = Color::split_color(&raw.item);
+        let count = if use_total { raw.total } else { raw.missing };
+
+        Self {
+            item: item.to_string(),
+            color,
+            count,
+        }
+    }
+}
+
+impl Display for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.color {
+            Some(color) => write!(f, "{} {} {}", self.count, color, self.item),
+            None => write!(f, "{} {}", self.count, self.item),
+        }
+    }
+}
+
+fn main() -> color_eyre::eyre::Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
 
@@ -38,26 +75,48 @@ fn main() -> Result<()> {
     }
 
     let items = {
-        let mut items = HashMap::new();
+        let mut items = Vec::new();
 
         for line in reader.deserialize() {
-            let line: MaterialLine = line?;
+            let line: RawMaterial = line?;
+            let item = Item::from_raw(line, args.use_total);
 
-            let count = if args.use_total {
-                line.total
-            } else {
-                line.missing
-            };
-
-            if count != 0 {
-                items.insert(line.item, count);
+            if item.count != 0 {
+                items.push(item);
             }
         }
 
         items
     };
 
-    println!("{:?}", items);
+    for item in &items {
+        println!("{}", item);
+    }
+
+    if let Some(dye_calc) = args.dye_calc {
+        let colors = dye::compute_colors(&items);
+
+        println!("\nColors:");
+        for (color, count) in sort_map(&colors) {
+            println!("{}: {}", color, count);
+        }
+
+        if matches!(
+            dye_calc,
+            DyeCalcMode::Primary | DyeCalcMode::PrimaryAndQuasi
+        ) {
+            let dyes = dye::compute_dye_ingredients(colors, dye_calc);
+
+            println!("\nDyes ({:?}):", dye_calc);
+            for (color, count) in sort_map(&dyes) {
+                println!("{}: {}", color, count);
+            }
+        }
+    }
 
     Ok(())
+}
+
+fn sort_map<K, V: Ord>(map: &HashMap<K, V>) -> Vec<(&K, &V)> {
+    map.iter().sorted_by_key(|(_, v)| *v).rev().collect()
 }
